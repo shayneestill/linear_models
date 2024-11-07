@@ -1,0 +1,289 @@
+---
+title: "Midterm"
+author: "Shayne Estill (ske2118)"
+output: github_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(rvest)
+library(httr)
+library(ggridges)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 6, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+### Problem 1 - Data Import and Cleaning ###
+
+I used Zillow data to observe trends in housing and rental prices. I used Zillow's reports on Zillow Observed Rent Index (ZORI) in NYC between January 2015 and August 2024 as well as the Zillow Home Value Index (ZHVI) in regions across the USA in 2023. 
+
+I begin by importing the ZORI csv file, updating variable names, creating borough variable, and pivoting the data to have dates as columns. Then, I imported the zip code html file and cleaned variable names. I used a left_join to merge by zip_code and dropped all missing zori_index values.
+
+```{r}
+zori_df = 
+  read_csv(
+    "data/zip_zori_uc_sfrcondomfr_sm_month_NYC.csv") |>
+  janitor::clean_names() |>
+  mutate(
+    borough = case_when(
+      county_name == "Queens County" ~ "Queens",
+      county_name == "Kings County" ~ "Brooklyn",
+      county_name == "Bronx County" ~ "Bronx",
+      county_name == "New York County" ~ "Manhattan",
+      county_name == "Richmond County" ~ "Staten Island",
+      TRUE ~ ""
+    )) |>
+  relocate(borough, .after = county_name) |>
+  mutate(region_name = as.character(region_name)) |>
+  rename(zip_code = region_name) |>
+  pivot_longer(
+    starts_with ("x"),
+    names_to = "date",
+    names_prefix = "x",
+    values_to = "zori_index") |>
+  drop_na(zori_index)
+```
+
+```{r}
+zip_url = "https://p8105.com/data/zip_codes.html"
+zip_html = read_html(zip_url)
+  
+zip_html
+```
+
+```{r}
+zip_table <-
+zip_html |>
+  html_table(header = TRUE) |>
+  last() |>
+  janitor::clean_names() |>
+  mutate(
+    zip_code = as.character(zip_code))
+```
+
+```{r warning = TRUE}
+merged_df = 
+  left_join(zori_df, zip_table, by = c("zip_code")) |>
+  select(zip_code, date, city, state, zori_index, borough, neighborhood) 
+```
+
+After the merge, I get an error. To investigate, I will use slice. 
+
+```{r}
+zori_df |> slice (4757) 
+zip_table |> slice (256)
+
+zip_table |> filter(zip_code == 10463)
+zori_df |> filter(zip_code == 11368) 
+```
+
+Zip code 10463 is assigned to two different counties. Per google, it should be assigned to Bronx. I remove this incorrect duplication from our zip_table and then re-merge. 
+
+```{r}
+zip_table_cleaned <-
+  zip_table |>
+  filter(!(zip_code == 10463 & county == "New York"))
+```
+
+```{r, warning = TRUE}
+merged_df_cleaned <-
+  left_join(zori_df, zip_table_cleaned, by = c("zip_code")) |>
+  select(zip_code, date, city, state, zori_index, borough, neighborhood)
+```
+I encounter another error so I follow the same data cleaning approach.
+
+```{r}
+zori_df |> slice (5105) 
+zip_table |> filter(zip_code == 11201)
+```
+
+```{r}
+zip_table_cleaned2 <-
+  zip_table_cleaned |>
+  filter(!(zip_code == 11201 & county == "New York"))
+```
+
+```{r}
+merged_df_cleaned2 <-
+  left_join(zori_df, zip_table_cleaned2, by = c("zip_code")) |>
+  select(zip_code, date, city, state, zori_index, borough, neighborhood)
+```
+
+There are `r nrow(merged_df_cleaned2)` total observations, `r n_distinct(merged_df_cleaned2$zip_code)` unique zip codes, and `r n_distinct(merged_df_cleaned2$neighborhood)` unique neighborhoods. 
+
+```{r}
+zhvi_df = 
+  read_csv(
+    "data/zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month_2023.csv") |>
+    janitor::clean_names()  |>
+  rename(
+    zip_code = region_name
+  ) |>
+   pivot_longer(
+    starts_with ("x"),
+    names_to = "date",
+    names_prefix = "x",
+    values_to = "zhvi_index") |>
+  select(zip_code, state, city, date, county_name, zhvi_index) |>
+  drop_na(zhvi_index)
+```
+
+I import the ZHVI csv file, update variable names, and pivot the data to have dates as columns. I select variables of interest and drop any missing zhvi_index values. 
+
+#### Problem 2 - Quality Control and EDA ####
+```{r}
+zori_df |>
+  count(zip_code)
+```
+
+Fewer than 116 observations per zip code could be because of missing data for certain months. 
+
+There are `r n_distinct(zori_df$zip_code)` ZIP codes in the NYC rental 
+dataset and `r n_distinct(zip_table$zip_code)` ZIP codes in the ZIP code 
+dataset.
+
+There are fewer zip codes in the NYC rental dataset because it only has data for rental housing, whereas the ZIP code dataset could include zip codes for office buildings, etc. where we would not expect to find rentals. 
+
+```{r}
+avg_price <- 
+  merged_df_cleaned2 |>
+   separate(date, into = c("year", "month", "day"), convert = TRUE) |>
+    mutate(
+      year = as.numeric(year),
+      month = as.numeric(month),
+      day = as.numeric(day)) |>
+  group_by(year, borough) |> 
+  summarize(
+    avg_rental_price = mean(zori_index, na.rm = TRUE)) |>
+  pivot_wider(
+    names_from = "year", 
+    values_from = "avg_rental_price") 
+
+avg_price |>
+    knitr::kable(digits = 1)
+```
+
+Based on table, Manhattan has the most expensive rentals across years. From 2015-2019 there was steady growth in rental prices across all boroughs, then from 2020-2021 rental prices were stagnant or decreased. 2022-2024 continued to experience steady increases in prices. There is missing data for 2015-2019 Staten Island.
+ 
+```{r}
+covid_df <-
+  merged_df_cleaned2 |>
+  filter(date %in% c("2020_01_31", "2021_01_31")) |>
+  pivot_wider(
+    names_from = "date", 
+    values_from = "zori_index") |>
+  group_by(zip_code, borough, neighborhood) |>
+  summarize(
+        price_change = `2020_01_31` - `2021_01_31`)
+
+ largest_drop_df <- covid_df |>
+  group_by(borough) |>
+  filter(price_change == max(price_change, na.rm = TRUE)) |>
+  select(borough, neighborhood, price_change) |>
+  arrange(desc(price_change))
+
+largest_drop_df |>
+  knitr::kable(digits = 1)
+```
+
+The largest price drop was in Manhattan, specifically in Lower Manhattan whereas the Bronx, specifically the Southeast Bronx, experienced the lowest. 
+
+### Problem 3 - Visualization ###
+
+```{r}
+merged_df_plot <-
+  merged_df |>
+  separate(date, into = c("year", "month", "day"), convert = TRUE) |>
+    mutate(
+      year = as.numeric(year),
+      month = as.numeric(month),
+      day = as.numeric(day)) |>
+  group_by(borough, zip_code, year) |>
+  summarize(mean_zori = mean(zori_index, na.rm = TRUE)) |>
+ggplot(aes(x = year, y = mean_zori, group = zip_code)) + geom_point(aes(color = borough)) + geom_path() +
+  labs(title = "NYC Rental Prices within ZIP codes",
+         x = "Year",
+         y = "Average Rental Price (ZORI)",
+    color = "zip code") +
+scale_x_continuous(
+    breaks = c(2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024))
+
+merged_df_plot
+
+ggsave("merged_df_plot.pdf", merged_df_plot, width = 8, height = 5)
+```
+
+This shows that from 2015-2019, most zip codes saw a steady increase in rental prices. From 2019-2021 there was a flattening or drop in rental prices and then after 2021, rental prices continued to climb. Staten Island and the Bronx had lower mean prices while Manhattan on average had the highest prices. 
+
+```{r}
+zhvi_plot <-
+  zhvi_df |>
+  group_by(state, zip_code) |>
+  summarize(avg_price = mean(zhvi_index, na.rm = TRUE), color = state) |>
+  ggplot(aes(y = avg_price, x = state)) + 
+  geom_boxplot() + 
+  labs(
+    title = "2023 Distribution of Average Housing Prices by State",
+    x = "state",
+    y = "Average Housing Price (ZHVI)",
+    color = "zip_code")
+
+zhvi_plot
+```
+
+This shows the distribution of average housing prices within each zip code in a state in 2023. California and New York appear to have the highest average housing prices as well as the most variability. West Virginia and Arkansas appear to have some of the lowest and least variable housing prices.
+
+```{r}
+rent_house_comp <-
+  full_join(merged_df, zhvi_df, by = c("zip_code", "date", "city", "state")) |>
+  select(zip_code, date, city, state, zori_index, zhvi_index) |>
+  separate(date, into = c("year", "month", "day"), convert = TRUE) |>
+    mutate(
+      year = as.numeric(year),
+      month = as.numeric(month),
+      day = as.numeric(day)) |>
+  filter(year == 2023, state == "NY", city == "New York") |>
+  group_by(zip_code) |>
+  summarize(
+    mean_zori = mean(zori_index),
+    mean_zhvi = mean(zhvi_index))
+```
+
+```{r}
+rent_house_plot <-
+  rent_house_comp |>
+  mutate(zip_code = as.factor(zip_code)) |>
+  ggplot(aes(x = mean_zori, y = mean_zhvi)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE)  +
+  labs(
+    title = "2023 Average Rental Prices vs. Housing Prices by ZIP Code in NYC",
+    x = "Average Rental Price (ZORI)",
+    y = "Average Housing Price (ZHVI)",
+    color = "zip code") + 
+   theme(legend.position = "bottom")
+
+rent_house_plot
+```
+
+In general, as rental prices increase, housing price increase linearly. The majority of rental prices cluster around $2000-4500 range. 
+
+Some limitations include missing 2015-2019 Staten Island data, other missing data, lack of information on type of property and proportion rent-controlled. 
+
+
